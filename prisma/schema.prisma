@@ -1,0 +1,63 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Course {
+  id   String @id @default(cuid())
+  name String @unique
+
+  modules Module[]
+
+  createdAt DateTime @default(now())
+}
+
+model Module {
+  id   String @id @default(cuid())
+  name String
+
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  lectures Lecture[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([courseId, name])
+  @@index([courseId])
+}
+
+model Lecture {
+  id       String @id @default(cuid())
+  name     String
+  fileName String
+
+  moduleId String
+  module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  chunks Chunk[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([moduleId, name])
+  @@index([moduleId])
+}
+
+model Chunk {
+  id   String @id @default(cuid())
+  text String
+
+  startTime String
+  endTime   String
+
+  lectureId String
+  lecture   Lecture @relation(fields: [lectureId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([lectureId])
+}
