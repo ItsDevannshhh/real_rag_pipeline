@@ -5,35 +5,35 @@ const files = await findSrtFiles("./class-subtitle");
 
 console.log(`Found ${files.length} SRT files\n`);
 
-if (files.length === 0) {
-    throw new Error("No SRT files found");
+let successful = 0;
+let failed = 0;
+
+for (const file of files) {
+    try {
+        const subtitles = await parseSrt(file.filePath);
+
+        if (subtitles.length === 0) {
+            console.log(`⚠️  No subtitles: ${file.filePath}`);
+            failed++;
+            continue;
+        }
+
+        console.log(
+            `✅ ${file.moduleName} / ${file.lectureName} → ${subtitles.length} subtitles`
+        );
+
+        successful++;
+    } catch (error) {
+        console.error(`❌ Failed: ${file.filePath}`);
+        console.error(error);
+
+        failed++;
+    }
 }
 
-const firstFile = files[0];
-
-if (!firstFile) {
-    throw new Error("First SRT file is undefined");
-}
-
-console.log("========== FILE ==========");
-console.log(`Module  : ${firstFile.moduleName}`);
-console.log(`Lecture : ${firstFile.lectureName}`);
-console.log(`File    : ${firstFile.fileName}`);
-console.log(`Path    : ${firstFile.filePath}`);
-
-const subtitles = await parseSrt(firstFile.filePath);
-
-console.log("\n========== PARSED ==========");
-console.log(`Subtitles: ${subtitles.length}\n`);
-
-for (const subtitle of subtitles.slice(0, 10)) {
-    console.log(
-        `[${subtitle.index}] ` +
-        `${subtitle.startTime} --> ${subtitle.endTime}`
-    );
-
-    console.log(subtitle.text);
-    console.log();
-}
+console.log("\n========== SUMMARY ==========");
+console.log(`Total     : ${files.length}`);
+console.log(`Successful: ${successful}`);
+console.log(`Failed    : ${failed}`);
 
 // test file only
