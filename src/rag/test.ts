@@ -1,70 +1,39 @@
-import { validateReadOnlySql } from "./utils/sql-validator";
+import { executeReadOnlySql } from "./utils/sql-executor";
 
-const safeQueries = [
-    `
-    SELECT COUNT(*)
-    FROM Lecture
-    JOIN Module
-      ON Lecture.moduleId = Module.id
-    WHERE Module.name = 'module 3';
+const queries = [
+  `
+    SELECT COUNT(*) AS lecture_count
+    FROM "Lecture" l
+    JOIN "Module" m
+      ON l."moduleId" = m."id"
+    WHERE m."name" = 'module 3'
   `,
 
-    `
-    SELECT lectureId, COUNT(*)
-    FROM Chunk
-    GROUP BY lectureId;
-  `,
-
-    `
-    WITH lecture_counts AS (
-      SELECT lectureId, COUNT(*) AS count
-      FROM Chunk
-      GROUP BY lectureId
-    )
-    SELECT *
-    FROM lecture_counts;
+  `
+    SELECT
+      m."name" AS module_name,
+      COUNT(l."id") AS lecture_count
+    FROM "Module" m
+    LEFT JOIN "Lecture" l
+      ON l."moduleId" = m."id"
+    GROUP BY m."id", m."name"
+    ORDER BY m."name"
   `,
 ];
 
-const unsafeQueries = [
-    `DELETE FROM Chunk;`,
+for (const sql of queries) {
+  console.log("\nSQL:");
+  console.log(sql.trim());
 
-    `UPDATE Lecture
-   SET name = 'hacked';`,
+  try {
+    const result = await executeReadOnlySql(sql);
 
-    `DROP TABLE Lecture;`,
+    console.log("\nResult:");
+    console.log(result);
+  } catch (error) {
+    console.error("\nExecution failed:");
+    console.error(error);
+  }
 
-    `SELECT * FROM Users;`,
-
-    `SELECT * FROM Lecture; DELETE FROM Chunk;`,
-];
-
-console.log("\n========== SAFE QUERIES ==========\n");
-
-for (const sql of safeQueries) {
-    try {
-        validateReadOnlySql(sql);
-        console.log("✓ SAFE");
-        console.log(sql.trim());
-    } catch (error) {
-        console.log("✗ REJECTED");
-        console.log(error);
-    }
-
-    console.log("-----------------------------------");
-}
-
-console.log("\n========== UNSAFE QUERIES ==========\n");
-
-for (const sql of unsafeQueries) {
-    try {
-        validateReadOnlySql(sql);
-        console.log("✗ SHOULD HAVE BEEN REJECTED");
-        console.log(sql.trim());
-    } catch (error) {
-        console.log("✓ REJECTED");
-        console.log((error as Error).message);
-    }
-
-    console.log("-----------------------------------");
+  console.log("-----------------------------------");
 }
