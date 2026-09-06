@@ -1,27 +1,19 @@
-import { searchVectors } from "./vector-search";
-import { rerankResults } from "./reranker";
+import { enhanceQuery } from "./query-enhancer";
 
-const query = "What is React Native?";
+const queries = [
+    "What is React Native?",
+    "How does Expo work?",
+    "What is the difference between React Native and Expo?",
+];
 
-const candidates = await searchVectors(query, 10);
+for (const query of queries) {
+    const enhancedQuery = await enhanceQuery(query);
 
-console.log(`Retrieved ${candidates.length} candidates`);
+    console.log("\nOriginal:");
+    console.log(query);
 
-const results = await rerankResults(
-    query,
-    candidates,
-    5
-);
+    console.log("\nEnhanced:");
+    console.log(enhancedQuery);
 
-console.log("\n========== RERANKED RESULTS ==========\n");
-
-for (const [index, result] of results.entries()) {
-    console.log(`Result ${index + 1}`);
-    console.log(`Rerank Score : ${result.relevanceScore}`);
-    console.log(`Vector Score : ${result.score}`);
-    console.log(`Module       : ${result.moduleName}`);
-    console.log(`Lecture      : ${result.lectureName}`);
-    console.log(`Timestamp    : ${result.startTime} → ${result.endTime}`);
-    console.log(`Text         : ${result.text}`);
-    console.log("--------------------------------------");
+    console.log("-----------------------------------");
 }
