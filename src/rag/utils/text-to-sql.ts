@@ -88,12 +88,27 @@ Rules:
 - Return ONLY the SQL query.
 
 Important semantic rules:
-- The actual module names listed above are stored in Module.name.
+- The actual module names listed above are stored in "Module"."name".
 - Module IDs are strings (CUIDs), not integers.
 - Never assume a module name maps to a numeric ID.
-- When the user refers to a module, match against Module.name.
+- When the user refers to a module, match against "Module"."name".
 - Preserve the exact module name when possible.
-      `.trim(),
+
+PostgreSQL identifier rules:
+- Prisma created these tables with quoted, case-sensitive names:
+  "Course", "Module", "Lecture", "Chunk".
+- ALWAYS use double quotes around table names.
+- ALWAYS use double quotes around column names.
+- Never use unquoted table or column names.
+
+Example:
+
+SELECT COUNT(*)
+FROM "Lecture" l
+JOIN "Module" m
+  ON l."moduleId" = m."id"
+WHERE m."name" = 'module 3';
+`.trim(),
             },
             {
                 role: "user",

@@ -1,39 +1,36 @@
-import { executeReadOnlySql } from "./utils/sql-executor";
+import { decomposeQuery } from "./query-decomposer";
+import { enhanceQuery } from "./query-enhancer";
+import { retrieveForQueries } from "./retrieval";
 
-const queries = [
-  `
-    SELECT COUNT(*) AS lecture_count
-    FROM "Lecture" l
-    JOIN "Module" m
-      ON l."moduleId" = m."id"
-    WHERE m."name" = 'module 3'
-  `,
+const userQuery =
+  "What is React Native and how many lectures are in module 3?";
 
-  `
-    SELECT
-      m."name" AS module_name,
-      COUNT(l."id") AS lecture_count
-    FROM "Module" m
-    LEFT JOIN "Lecture" l
-      ON l."moduleId" = m."id"
-    GROUP BY m."id", m."name"
-    ORDER BY m."name"
-  `,
-];
+const enhancedQuery = await enhanceQuery(userQuery);
 
-for (const sql of queries) {
-  console.log("\nSQL:");
-  console.log(sql.trim());
+console.log("\n========== ORIGINAL QUERY ==========");
+console.log(userQuery);
 
-  try {
-    const result = await executeReadOnlySql(sql);
+console.log("\n========== ENHANCED QUERY ==========");
+console.log(enhancedQuery);
 
-    console.log("\nResult:");
-    console.log(result);
-  } catch (error) {
-    console.error("\nExecution failed:");
-    console.error(error);
-  }
+const queries = await decomposeQuery(enhancedQuery);
 
+console.log("\n========== DECOMPOSED QUERIES ==========");
+
+queries.forEach((query, index) => {
+  console.log(`${index + 1}. ${query}`);
+});
+
+const results = await retrieveForQueries(queries);
+
+console.log("\n========== RETRIEVAL RESULTS ==========\n");
+
+for (const result of results) {
+  console.log(`Query : ${result.query}`);
+  console.log(`Route : ${result.route}`);
+  console.log("Data  :");
+  console.dir(result.data, {
+    depth: null,
+  });
   console.log("-----------------------------------");
 }
