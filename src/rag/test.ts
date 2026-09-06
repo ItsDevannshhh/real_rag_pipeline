@@ -1,25 +1,21 @@
-import { decomposeQuery } from "./query-decomposer";
+import { routeQuery } from "./query-router";
 
 const queries = [
     "What is React Native?",
-
-    "What is React Native and what is Expo?",
-
-    "What is the difference between React Native and Expo, and when should I use each?",
-
-    "How does React Native work and what are its advantages and limitations?",
+    "How does Expo work?",
+    "What are the advantages of React Native?",
+    "How many lectures are in module 3?",
+    "List all lectures in module 5.",
+    "How many chunks are stored for each lecture?",
 ];
 
 for (const query of queries) {
-    const decomposed = await decomposeQuery(query);
+    const route = await routeQuery(query);
 
-    console.log("\nOriginal:");
+    console.log("\nQuery:");
     console.log(query);
 
-    console.log("\nDecomposed:");
-    decomposed.forEach((item, index) => {
-        console.log(`${index + 1}. ${item}`);
-    });
+    console.log(`Route: ${route}`);
 
     console.log("-----------------------------------");
 }
