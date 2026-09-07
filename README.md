@@ -1,852 +1,191 @@
-# Advanced RAG Pipeline
+# Advanced RAG Course Assistant
 
-A production-style **Advanced Retrieval-Augmented Generation (RAG)** system built around course subtitle data. This project extends a simple vector RAG pipeline into a multi-stage architecture that combines **Qdrant vector search, PostgreSQL/SQL retrieval, query transformation, query routing, reranking, LLM-based evaluation, retries, and input/output guardrails**.
+An advanced Retrieval-Augmented Generation (RAG) system that answers questions from course lecture transcripts using hybrid retrieval, LLM-based query processing, evaluation, retries, safety guardrails, and Inngest workflow orchestration.
 
-The goal is not just to retrieve similar chunks, but to build a reliable question-answering pipeline that can decide **what to retrieve, where to retrieve it from, how to rank it, and whether the generated answer is good enough**.
-
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Why Advanced RAG](#why-advanced-rag)
-- [Architecture](#architecture)
-- [End-to-End Flow](#end-to-end-flow)
-- [1. Data Ingestion](#1-data-ingestion)
-- [2. Database Layer](#2-database-layer)
-- [3. Input Guardrails](#3-input-guardrails)
-- [4. Query Enhancement](#4-query-enhancement)
-- [5. Query Decomposition](#5-query-decomposition)
-- [6. Query Routing](#6-query-routing)
-- [7. Retrieval](#7-retrieval)
-- [8. Ranking / Reranking](#8-ranking--reranking)
-- [9. RAG Generation](#9-rag-generation)
-- [10. Answer Evaluation](#10-answer-evaluation)
-- [11. Retry Mechanism](#11-retry-mechanism)
-- [12. Output Guardrails](#12-output-guardrails)
-- [13. API Routes](#13-api-routes)
-- [Project Structure](#project-structure)
-- [Technology Stack](#technology-stack)
-- [Docker Infrastructure](#docker-infrastructure)
-- [Environment Variables](#environment-variables)
-- [Implementation Roadmap](#implementation-roadmap)
-- [Simple RAG vs Advanced RAG](#simple-rag-vs-advanced-rag)
-- [Important Design Principles](#important-design-principles)
-- [Future Improvements](#future-improvements)
+The project is built from individual RAG components rather than relying on an end-to-end framework such as LangChain.
 
 ---
 
-# Overview
+## ✨ Features
 
-The system uses subtitle files from a course as its knowledge source.
+- Course transcript ingestion from `.srt` files
+- PostgreSQL for structured course data
+- Qdrant for semantic vector search
+- LLM-powered query enhancement
+- Multi-query decomposition
+- Intelligent query routing
+- Hybrid retrieval:
+  - Vector search + reranking
+  - Text-to-SQL
+- Parallel retrieval for decomposed queries
+- LLM-based answer generation
+- LLM-based answer evaluation
+- Automatic retry for low-quality answers
+- Input guardrails
+- Output guardrails
+- Lecture/module/timestamp references in final responses
+- Inngest-based workflow orchestration
+- Express backend
+- Direct OpenAI SDK usage
+- No LangChain
 
-The source data is provided as `.srt` files. The subtitles are parsed, cleaned, chunked, embedded, and stored in both:
+---
 
-- **Qdrant** → semantic/unstructured retrieval
-- **PostgreSQL** → structured/relational retrieval
-
-When a user asks a question, the system does not immediately perform vector search.
-
-Instead, the query passes through multiple stages:
+## 🏗️ Architecture
 
 ```text
-User Query
-    |
-    v
-Input Guardrails
-    |
-    v
-Query Enhancement
-    |
-    v
-Query Decomposition
-    |
-    v
-Query Routing
-    |
-    +--------------------+
-    |                    |
-    v                    v
-Qdrant Vector DB     PostgreSQL
-    |                    |
-    +---------+----------+
-              |
-              v
-       Candidate Results
-              |
-              v
-      Ranking / Reranking
-              |
-              v
-            Top 5
-              |
-              v
-        LLM Generation
-              |
-              v
-       Answer Evaluation
-              |
-        +-----+-----+
-        |           |
-      < 6           >= 6
-        |           |
-        v           v
-      Retry     Output Guardrail
-     (max 3)         |
-                     v
-              Final Response
+                         User Query
+                              │
+                              ▼
+                     ┌─────────────────┐
+                     │ Input Guardrail │
+                     └────────┬────────┘
+                              │
+                              ▼
+                     Query Enhancement
+                              │
+                              ▼
+                    Query Decomposition
+                              │
+                              ▼
+                 ┌─────────────────────────┐
+                 │   Parallel Retrieval    │
+                 └────────────┬────────────┘
+                              │
+                    ┌─────────┴─────────┐
+                    ▼                   ▼
+              Vector Route          SQL Route
+                    │                   │
+                    ▼                   ▼
+               Qdrant Search       Text-to-SQL
+                    │                   │
+                    ▼                   ▼
+                Reranking          SQL Validation
+                                        │
+                                        ▼
+                                  SQL Execution
+                    │                   │
+                    └─────────┬─────────┘
+                              ▼
+                     Answer Generation
+                              │
+                              ▼
+                         Evaluator
+                              │
+                    ┌─────────┴─────────┐
+                    │                   │
+                  < 6                  >= 6
+                    │                   │
+                    ▼                   ▼
+                  Retry          Output Guardrail
+                  ≤ 3 times             │
+                                        ▼
+                              Final Response LLM
+                                        │
+                                        ▼
+                              Answer + Timestamps
 ```
 
 ---
 
-# Why Advanced RAG?
+## 🔄 RAG Pipeline
 
-A basic RAG pipeline generally looks like:
+### 1. Input Guardrail
 
-```text
-Question
-   |
-Embedding
-   |
-Vector Search
-   |
-Top K Chunks
-   |
-LLM
-   |
-Answer
-```
+The query first passes through a safety layer using deterministic pattern matching followed by LLM-based classification.
 
-This works well for many simple use cases, but production systems often need more.
+It blocks requests involving sensitive information, prompt injection, harmful requests, credentials, secrets, and other restricted content.
 
-For example:
+### 2. Query Enhancement
 
-- The user query may be vague.
-- One question may contain multiple questions.
-- Different parts of a question may require different data sources.
-- Vector search can return noisy results.
-- The best retrieved chunks may not be the first vector-search results.
-- The generated answer may be incomplete or incorrect.
-- Sensitive requests should be rejected before retrieval.
-- Generated answers should also be checked before being returned.
+The original query is rewritten by an LLM to improve retrieval quality while preserving the original intent.
 
-Advanced RAG addresses these problems by adding multiple intelligence and validation layers.
+### 3. Query Decomposition
 
----
-
-# Architecture
-
-## High-Level Architecture
-
-```text
-                         +------------------+
-                         |   User / Client  |
-                         +--------+---------+
-                                  |
-                                  v
-                         +------------------+
-                         | Input Guardrail  |
-                         +--------+---------+
-                                  |
-                                  v
-                         +------------------+
-                         | Query Enhancement|
-                         +--------+---------+
-                                  |
-                                  v
-                         +------------------+
-                         | Query Decompose  |
-                         +--------+---------+
-                                  |
-                                  v
-                         +------------------+
-                         |   Query Router   |
-                         |       (LLM)      |
-                         +--------+---------+
-                                  |
-                   +--------------+--------------+
-                   |                             |
-                   v                             v
-          +------------------+           +------------------+
-          |  Qdrant Vector   |           |   PostgreSQL     |
-          |       DB         |           |    / SQL DB      |
-          +--------+---------+           +--------+---------+
-                   |                             |
-                   +--------------+--------------+
-                                  |
-                                  v
-                         +------------------+
-                         | Candidate Results|
-                         +--------+---------+
-                                  |
-                                  v
-                         +------------------+
-                         | Ranking/Reranking|
-                         +--------+---------+
-                                  |
-                                  v
-                              Top 5
-                                  |
-                                  v
-                         +------------------+
-                         |  RAG Generator   |
-                         |      (LLM)       |
-                         +--------+---------+
-                                  |
-                                  v
-                         +------------------+
-                         | Answer Evaluator |
-                         |      (LLM)       |
-                         +--------+---------+
-                                  |
-                    +-------------+-------------+
-                    |                           |
-                  Score < 6                  Score >= 6
-                    |                           |
-                    v                           v
-                 Retry                    Output Guardrail
-                Max 3 times                    |
-                                                v
-                                         Final Response
-```
-
----
-
-# End-to-End Flow
-
-A complete request follows this pipeline:
-
-```text
-1. User submits question
-        ↓
-2. Input guardrail
-        ↓
-3. Query enhancement
-        ↓
-4. Query decomposition
-        ↓
-5. Query routing
-        ↓
-6. Retrieve from Qdrant and/or PostgreSQL
-        ↓
-7. Collect candidate results
-        ↓
-8. Rank / rerank candidates
-        ↓
-9. Select Top 5
-        ↓
-10. Generate answer using LLM
-        ↓
-11. Evaluate generated answer
-        ↓
-12. If score < 6 → retry
-        ↓
-13. Maximum 3 attempts
-        ↓
-14. Output guardrail
-        ↓
-15. Return final answer
-```
-
----
-
-# 1. Data Ingestion
-
-The initial knowledge source is a collection of course subtitle files.
+Complex queries are split into independent subqueries.
 
 Example:
 
 ```text
-subtitles/
-├── lecture-01.srt
-├── lecture-02.srt
-├── lecture-03.srt
-└── ...
+"What is React Native and how many lectures are in module 3?"
 ```
 
-An SRT file contains:
+can become:
 
 ```text
-1
-00:00:01,000 --> 00:00:04,000
-Welcome to the course.
-
-2
-00:00:04,000 --> 00:00:08,000
-Today we are going to learn about React.
+1. What is React Native?
+2. How many lectures are in module 3?
 ```
 
-The ingestion pipeline converts this into structured transcript data.
+### 4. Query Routing
+
+Each decomposed query is routed to the appropriate retrieval system.
+
+**VECTOR** is used for semantic questions about lecture content.
+
+**SQL** is used for structured questions such as:
+
+- Counts
+- Lists
+- Filtering
+- Grouping
+- Course/module/lecture metadata
+
+### 5. Vector Retrieval
+
+Course chunks are embedded using:
 
 ```text
-SRT Files
-   |
-   v
-Subtitle Parser
-   |
-   v
-Clean Transcript
-   |
-   v
-Metadata Extraction
-   |
-   v
-Chunking
-   |
-   +----------------------+
-   |                      |
-   v                      v
-PostgreSQL             Embeddings
-                           |
-                           v
-                        Qdrant
+text-embedding-3-small
 ```
 
-A subtitle entry can conceptually become:
+and stored in Qdrant.
 
-```json
-{
-  "lecture": "lecture-01",
-  "startTime": 4,
-  "endTime": 8,
-  "text": "Today we are going to learn about React."
-}
+The system retrieves candidate chunks and uses an LLM-based reranker to select the most relevant evidence.
+
+### 6. Text-to-SQL
+
+For structured queries, an LLM generates SQL based on the database schema.
+
+Generated SQL is validated before execution.
+
+Only read-only queries against the allowed course tables are permitted.
+
+### 7. Parallel Retrieval
+
+When a query is decomposed into multiple subqueries, retrieval operations run concurrently.
+
+```ts
+await Promise.all(
+  queries.map((query) => retrieveSingleQuery(query))
+);
 ```
 
-After chunking:
+### 8. Answer Generation
 
-```json
-{
-  "lecture": "lecture-01",
-  "chunkIndex": 3,
-  "text": "React is a JavaScript library used for building...",
-  "metadata": {
-    "startTime": 120,
-    "endTime": 180
-  }
-}
-```
+The retrieved evidence is passed to an LLM which generates an answer using only the available evidence.
 
-## Why Chunking?
+Both vector and SQL results can contribute to the answer.
 
-Embedding an entire lecture into one vector would make retrieval too coarse.
+### 9. Answer Evaluation
 
-Instead:
+A separate evaluator LLM evaluates the generated answer on:
 
-```text
-Lecture
-   |
-   +-- Chunk 1
-   +-- Chunk 2
-   +-- Chunk 3
-   +-- ...
-```
-
-Smaller meaningful chunks allow Qdrant to retrieve the most relevant parts of the course.
-
----
-
-# 2. Database Layer
-
-The system intentionally uses **two different databases for two different retrieval strategies**.
-
-## Qdrant
-
-Qdrant is used for semantic retrieval.
-
-Example:
-
-> "Explain how React manages component state."
-
-The system converts the query into an embedding and searches for semantically similar transcript chunks.
-
-```text
-Question
-   |
-Embedding Model
-   |
-Query Vector
-   |
-Qdrant
-   |
-Relevant Chunks
-```
-
----
-
-## PostgreSQL
-
-PostgreSQL stores structured information.
-
-Possible schema:
-
-```text
-courses
-    |
-    +-- lectures
-           |
-           +-- transcript entries
-           |
-           +-- chunks
-```
-
-PostgreSQL can answer structured questions such as:
-
-> "How many lectures are present?"
-
-or:
-
-> "Which lecture contains this topic?"
-
----
-
-## Multi-Source Retrieval
-
-Some questions may require both sources.
-
-Example:
-
-> "Which lecture explains authentication, and how many lectures are in the course?"
-
-The router may send:
-
-```text
-Question 1 → Qdrant
-Question 2 → PostgreSQL
-```
-
-The results are then combined before generation.
-
----
-
-# 3. Input Guardrails
-
-The input guardrail is the first safety layer.
-
-```text
-User Query
-    |
-    v
-Input Guardrail
-    |
-    +---- Unsafe/Sensitive ---> Reject
-    |
-    +---- Safe ---------------> Continue
-```
-
-The purpose is to prevent users from using the system to request sensitive or disallowed information.
-
-Examples of requests that may need to be rejected:
-
-```text
-- Passwords
-- Credentials
-- Private personal information
-- Sensitive data extraction
-```
-
-Guardrails should happen before expensive retrieval and generation operations.
-
----
-
-# 4. Query Enhancement
-
-Users do not always write ideal retrieval queries.
-
-Example:
-
-```text
-User:
-"react hooks"
-```
-
-The query enhancement stage asks an LLM to transform it into a more useful query.
-
-Example:
-
-```text
-Original:
-react hooks
-
-Enhanced:
-"Explain React Hooks, their purpose, important types,
-and examples discussed in the course."
-```
-
-This can improve retrieval quality.
-
----
-
-## Query Translation Techniques
-
-This architecture can support multiple query-transformation techniques:
-
-### Query Rewrite
-
-Rewrite the original query into a clearer retrieval query.
-
-### Step-Back Prompting
-
-Move from a very specific question toward a broader conceptual question.
-
-Example:
-
-```text
-Specific:
-"Why does useEffect run twice in development?"
-
-Step-back:
-"How does React's effect execution behavior work
-in development mode?"
-```
-
-### HyDE
-
-HyDE means **Hypothetical Document Embeddings**.
-
-Instead of embedding the question directly:
-
-```text
-Question
-   |
-   v
-LLM generates hypothetical answer/document
-   |
-   v
-Embed hypothetical document
-   |
-   v
-Vector Search
-```
-
-The hypothetical document can sometimes be closer in semantic space to the actual source documents.
-
----
-
-# 5. Query Decomposition
-
-Complex questions can contain multiple independent sub-questions.
-
-Example:
-
-> "Explain React Hooks, compare useState and useEffect, and tell me which lecture discusses them."
-
-The LLM can decompose this into:
-
-```text
-Q1 → What are React Hooks?
-
-Q2 → What is useState?
-
-Q3 → What is useEffect?
-
-Q4 → What is the difference between useState and useEffect?
-
-Q5 → Which lecture discusses these topics?
-```
-
-Each sub-query can then be routed independently.
-
-```text
-User Query
-    |
-    v
-LLM
-    |
-    +-- Sub Query 1
-    +-- Sub Query 2
-    +-- Sub Query 3
-    +-- Sub Query 4
-```
-
-This improves retrieval for complex questions.
-
----
-
-# 6. Query Routing
-
-The router decides **where each sub-query should be answered from**.
-
-```text
-Sub Query
-    |
-    v
-LLM Router
-   / \
-  /   \
- v     v
-Qdrant PostgreSQL
-```
-
-Example:
-
-### Semantic question
-
-> "Explain React Hooks."
-
-```text
-Router → Qdrant
-```
-
-Then:
-
-```text
-Query
- ↓
-Embedding
- ↓
-Qdrant Search
-```
-
-### Structured question
-
-> "How many lectures are in the course?"
-
-```text
-Router → PostgreSQL
-```
-
-Then:
-
-```text
-Question
- ↓
-Text-to-SQL
- ↓
-SQL Validation
- ↓
-PostgreSQL
- ↓
-Result
-```
-
----
-
-# Text-to-SQL
-
-For SQL-routed questions, the LLM can translate natural language into SQL.
-
-Example:
-
-```text
-User:
-"How many lectures are in the course?"
-```
-
-LLM:
-
-```sql
-SELECT COUNT(*) FROM lectures;
-```
-
-PostgreSQL:
-
-```text
-42
-```
-
-The SQL execution layer should be restricted and validated.
-
-The LLM should **not** be trusted with unrestricted database permissions.
-
-Recommended approach:
-
-```text
-LLM-generated SQL
-       |
-       v
-SQL validation
-       |
-       v
-Read-only / restricted DB user
-       |
-       v
-PostgreSQL
-```
-
----
-
-# 7. Retrieval
-
-## Vector Retrieval
-
-The vector retrieval path is:
-
-```text
-Sub Query
-    |
-    v
-Embedding Model
-    |
-    v
-Vector
-    |
-    v
-Qdrant
-    |
-    v
-Candidate Chunks
-```
-
-The architecture can initially retrieve around **120 candidates**.
-
-```text
-Query
- ↓
-Qdrant
- ↓
-~120 candidates
-```
-
-The large candidate set gives the reranking stage enough information to find the best results.
-
----
-
-## SQL Retrieval
-
-SQL retrieval follows:
-
-```text
-Sub Query
-    |
-    v
-Text-to-SQL
-    |
-    v
-SQL Validation
-    |
-    v
-PostgreSQL
-    |
-    v
-Structured Results
-```
-
----
-
-# 8. Ranking / Reranking
-
-Vector similarity alone does not always produce the best final ordering.
-
-Therefore:
-
-```text
-~120 candidates
-       |
-       v
-Ranking / Reranking
-       |
-       v
-Top 5
-```
-
-Example:
-
-```text
-Candidate 1 → 0.71
-Candidate 2 → 0.95
-Candidate 3 → 0.62
-Candidate 4 → 0.91
-...
-```
-
-The reranker re-evaluates relevance and selects the strongest results.
-
-Finally:
-
-```text
-Top 5 Results
-```
-
-are provided to the generation model.
-
----
-
-# 9. RAG Generation
-
-The generator receives:
-
-```text
-Original User Question
-        +
-Retrieved Top 5 Results
-        |
-        v
-       LLM
-        |
-        v
-Generated Answer
-```
-
-Example prompt structure:
-
-```text
-You are an assistant answering questions using
-the provided course context.
-
-Question:
-...
-
-Context:
-1. ...
-2. ...
-3. ...
-4. ...
-5. ...
-
-Generate a clear answer using the provided context.
-```
-
-The goal is to ground the answer in retrieved information instead of relying only on the model's internal knowledge.
-
----
-
-# 10. Answer Evaluation
-
-The generated answer is not immediately returned.
-
-Instead, a second LLM evaluates it.
-
-```text
-User Question
-      +
-Generated Answer
-      |
-      v
-Answer Evaluator
-      |
-      v
-Score 1-10
-```
-
-Example:
-
-```json
-{
-  "score": 8,
-  "reason": "The answer directly addresses the question
-             and is supported by the retrieved context."
-}
-```
-
-The evaluator can consider:
-
-- Relevance
 - Correctness
 - Completeness
-- Context grounding
-- Clarity
+- Groundedness
+- Source correctness
 
----
-
-# 11. Retry Mechanism
-
-The evaluation threshold is:
+The score ranges from `0` to `10`.
 
 ```text
-score >= 6 → accepted
-score < 6  → retry
+Score >= 6 → Pass
+Score < 6  → Retry
 ```
+
+### 10. Retry Mechanism
+
+If the evaluator gives a score below `6`, its feedback is passed into the next generation attempt.
 
 Maximum attempts:
 
@@ -854,674 +193,395 @@ Maximum attempts:
 3
 ```
 
-Conceptually:
+### 11. Output Guardrail
 
-```text
-             Generate
-                |
-                v
-             Evaluate
-                |
-         +------+------+
-         |             |
-       < 6            >= 6
-         |             |
-         v             v
-       Retry       Continue
-         |
-         v
-      Attempt 2
-         |
-         v
-      Attempt 3
-         |
-         v
-     Final Result
-```
+Before returning a successful answer, the generated response passes through an output safety layer.
 
-Pseudo-code:
+This protects against accidentally exposing:
 
-```ts
-for (let attempt = 1; attempt <= 3; attempt++) {
-  const answer = await generateAnswer(context, query);
+- API keys
+- Passwords
+- Credentials
+- Tokens
+- Private keys
+- Environment variables
+- Confidential system information
+- Unsafe content
 
-  const evaluation = await evaluateAnswer(query, answer);
+### 12. Final Response
 
-  if (evaluation.score >= 6) {
-    return answer;
-  }
-}
+A final LLM converts the validated RAG result into a natural-language response.
 
-return bestAvailableAnswer;
-```
-
-A production implementation can make each retry more intelligent by changing the query, retrieval strategy, context, or generation prompt based on the evaluator's feedback.
-
----
-
-# 12. Output Guardrails
-
-After the answer is accepted, it passes through the final safety layer.
-
-```text
-Generated Answer
-      |
-      v
-Output Guardrail
-      |
-      +---- Unsafe ---> Block / Sanitize
-      |
-      +---- Safe -----> Return
-```
-
-This protects against sensitive information accidentally appearing in the generated response.
-
-The complete safety flow is therefore:
-
-```text
-            USER
-              |
-              v
-      Input Guardrail
-              |
-              v
-         RAG Pipeline
-              |
-              v
-       Output Guardrail
-              |
-              v
-        FINAL RESPONSE
-```
-
----
-
-# 13. API Routes
-
-Routes are the HTTP entry points into the application.
-
-Routes should remain thin.
-
-They should:
-
-1. Receive HTTP request
-2. Validate basic input
-3. Call application/service logic
-4. Return HTTP response
-
-They should **not contain the entire RAG implementation**.
+The response can also tell the user where the information was discussed in the course.
 
 Example:
 
 ```text
-POST /query
-      |
-      v
-routes/query.ts
-      |
-      v
-rag/orchestrator.ts
+React Native is a framework that allows developers to build
+mobile applications using JavaScript and React.
+
+This is discussed in Module 1, lecture
+"02_react-native-vs-expo_epm", from 00:00:00 to 00:02:00.
 ```
-
-Possible routes:
-
-```text
-POST /query
-```
-
-Starts the RAG query pipeline.
-
-```text
-POST /documents
-```
-
-Starts document/subtitle ingestion.
-
-```text
-GET /jobs/:id
-```
-
-Checks an asynchronous job.
-
-```text
-GET /health
-```
-
-Checks application health.
 
 ---
 
-# Project Structure
+## 🗃️ Data Architecture
 
-A suggested structure:
+Course data is organized hierarchically:
 
 ```text
-real-rag/
+Course
+ └── Module
+      └── Lecture
+           └── Chunk
+```
+
+### PostgreSQL
+
+PostgreSQL stores the structured course hierarchy and transcript chunks.
+
+Each chunk contains:
+
+```text
+text
+startTime
+endTime
+lectureId
+```
+
+### Qdrant
+
+Qdrant stores vector embeddings together with source metadata:
+
+```text
+chunkId
+text
+moduleName
+lectureName
+fileName
+startTime
+endTime
+```
+
+This allows retrieved evidence to retain its original course location.
+
+---
+
+## 📁 Project Structure
+
+```text
+real_rag_tutorial/
 │
 ├── src/
 │   │
-│   ├── routes/
-│   │   ├── query.ts
-│   │   ├── documents.ts
-│   │   └── health.ts
+│   ├── db/
+│   │   ├── ai.ts
+│   │   ├── prisma.ts
+│   │   └── qdrant.ts
 │   │
 │   ├── ingestion/
-│   │   ├── srt-parser.ts
+│   │   ├── srt-reader.ts
+│   │   ├── parser.ts
 │   │   ├── chunker.ts
-│   │   ├── embedder.ts
-│   │   └── ingest.ts
+│   │   ├── database.ts
+│   │   ├── embeddings.ts
+│   │   ├── ingest-all.ts
+│   │   └── ingest-vectors.ts
 │   │
 │   ├── rag/
-│   │   ├── orchestrator.ts
-│   │   ├── guardrails.ts
-│   │   ├── query-rewriter.ts
+│   │   ├── input-guardrail.ts
+│   │   ├── output-guardrail.ts
+│   │   ├── query-enhancer.ts
 │   │   ├── query-decomposer.ts
-│   │   ├── router.ts
-│   │   ├── vector-retrieval.ts
-│   │   ├── sql-retrieval.ts
+│   │   ├── query-router.ts
+│   │   ├── retrieval.ts
+│   │   ├── vector-search.ts
 │   │   ├── reranker.ts
-│   │   ├── generator.ts
-│   │   └── evaluator.ts
+│   │   ├── final-answer.ts
+│   │   ├── evaluator.ts
+│   │   ├── run-rag.ts
+│   │   ├── test.ts
+│   │   │
+│   │   └── utils/
+│   │       ├── text-to-sql.ts
+│   │       ├── sql-validator.ts
+│   │       ├── sql-executor.ts
+│   │       ├── source-resolver.ts
+│   │       └── source-deduplicator.ts
 │   │
-│   ├── db/
-│   │   ├── postgres.ts
-│   │   └── qdrant.ts
+│   ├── inngest/
+│   │   ├── client.ts
+│   │   ├── events.ts
+│   │   └── functions/
+│   │       ├── index.ts
+│   │       └── rag-pipeline.ts
 │   │
 │   └── index.ts
 │
-├── subtitles/
-│   ├── lecture-01.srt
-│   ├── lecture-02.srt
-│   └── ...
-│
 ├── prisma/
+│   └── schema.prisma
 │
+├── prisma.config.ts
 ├── docker-compose.yml
 ├── package.json
-├── .env
-├── .env.example
+├── tsconfig.json
+├── .gitignore
 └── README.md
 ```
 
 ---
 
-# Technology Stack
+## 🛠️ Tech Stack
 
-## Backend
+| Technology | Purpose |
+|---|---|
+| TypeScript | Application development |
+| Bun | Runtime & package manager |
+| Express | Backend API |
+| PostgreSQL | Structured data storage |
+| Prisma | Database ORM |
+| Qdrant | Vector database |
+| Inngest | Workflow orchestration |
+| OpenAI SDK | LLM & embedding API |
+| `gpt-4o-mini` | LLM operations |
+| `text-embedding-3-small` | Text embeddings |
+| SRT | Course transcript format |
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
 
 - Bun
-- TypeScript
-- Hono
-
-## AI / LLM
-
-- LLM provider SDK
-- LangChain.js for reusable AI/RAG components where useful
-- LangGraph.js if the workflow becomes stateful/complex
-
-## Databases
-
-- PostgreSQL
-- Prisma ORM
-- Qdrant
-
-## Data Processing
-
-- SRT subtitle parser
-- Text chunking
-- Embedding model
-
-## Infrastructure
-
 - Docker
-- Docker Compose
+- PostgreSQL
+- Qdrant
+- An OpenAI-compatible API provider
 
----
+### 1. Clone the repository
 
-# Docker Infrastructure
-
-For local development, PostgreSQL and Qdrant can run through Docker Compose.
-
-```yaml
-services:
-  postgres:
-    image: postgres:17
-    container_name: rag-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: rag_db
-    ports:
-      - "5432:5432"
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: rag-qdrant
-    restart: unless-stopped
-    ports:
-      - "6333:6333"
-      - "6334:6334"
+```bash
+git clone <your-repository-url>
+cd real_rag_tutorial
 ```
 
-No volumes are intentionally configured in this development setup.
+### 2. Install dependencies
 
-Therefore, database/container data is ephemeral.
+```bash
+bun install
+```
 
-PostgreSQL:
+### 3. Start infrastructure
+
+```bash
+docker compose up -d
+```
+
+This starts:
 
 ```text
-postgresql://postgres:postgres@localhost:5432/rag_db
+PostgreSQL → localhost:5432
+Qdrant     → localhost:6333
 ```
 
-Qdrant:
+### 4. Configure environment variables
 
-```text
-http://localhost:6333
-```
-
----
-
-# Environment Variables
-
-Example:
+Create `.env`:
 
 ```env
 DATABASE_URL="postgresql://postgres:postgres@localhost:5432/rag_db"
 
 QDRANT_URL="http://localhost:6333"
 
-OPENAI_API_KEY="your-api-key"
+AI_API_KEY="your-api-key"
+AI_API_BASE_URL="your-openai-compatible-base-url"
 
-EMBEDDING_MODEL="your-embedding-model"
-
-LLM_MODEL="your-llm-model"
+INNGEST_DEV=1
 ```
 
-Do not commit real secrets to GitHub.
+### 5. Setup Prisma
 
-Use:
+```bash
+bunx prisma migrate dev
+bunx prisma generate
+```
+
+### 6. Add course transcripts
+
+Place your `.srt` files inside:
+
+```text
+class-subtitle/
+```
+
+The dataset is intentionally excluded from Git using `.gitignore`.
+
+### 7. Run ingestion
+
+Run the project's ingestion scripts to:
+
+1. Parse SRT files
+2. Create transcript chunks
+3. Store chunks in PostgreSQL
+4. Generate embeddings
+5. Store vectors and metadata in Qdrant
+
+---
+
+## ▶️ Running the Application
+
+Start the Express server:
+
+```bash
+bun run src/index.ts
+```
+
+In another terminal, start the local Inngest development server:
+
+```bash
+npx --ignore-scripts=false inngest-cli@latest dev
+```
+
+The backend runs on:
+
+```text
+http://localhost:3000
+```
+
+---
+
+## 🧪 Testing
+
+The RAG pipeline can be tested directly with:
+
+```bash
+bun src/rag/test.ts
+```
+
+Example query:
+
+```text
+What is the overview of the course projects?
+```
+
+The test executes the RAG pipeline and then generates a natural-language response containing the answer and relevant course locations/timestamps.
+
+---
+
+## ⚙️ Inngest
+
+The RAG pipeline is orchestrated using Inngest.
+
+Each major stage is represented as an individual workflow step:
+
+```ts
+step.run("input-guardrail", ...)
+step.run("enhance-query", ...)
+step.run("decompose-query", ...)
+step.run("retrieve-evidence", ...)
+step.run("generate-answer-1", ...)
+step.run("resolve-sources-1", ...)
+step.run("evaluate-answer-1", ...)
+step.run("output-guardrail-1", ...)
+```
+
+This provides:
+
+- Durable workflow execution
+- Step-level visibility
+- Retry support
+- Easier debugging
+- Background execution
+
+Inngest orchestrates the workflow while the application backend executes the actual RAG operations.
+
+---
+
+## 🔐 Security
+
+Sensitive configuration is stored in environment variables.
+
+The following should not be committed:
 
 ```text
 .env
+class-subtitle/
+src/generated/prisma/
 ```
 
-locally and provide:
-
-```text
-.env.example
-```
-
-for other developers.
+The course dataset is private and is intentionally excluded from version control.
 
 ---
 
-# Implementation Roadmap
+## 📌 Current Dataset
 
-The project should be implemented incrementally.
+The current course dataset contains:
 
-## Phase 1 — Infrastructure
+- **87 lecture files**
+- **796 indexed transcript chunks**
 
-- [ ] Initialize Bun + TypeScript project
-- [ ] Setup Hono
-- [ ] Setup PostgreSQL
-- [ ] Setup Prisma
-- [ ] Setup Qdrant
-- [ ] Verify Docker services
+The transcript data is stored across PostgreSQL and Qdrant.
 
 ---
 
-## Phase 2 — Subtitle Ingestion
-
-- [ ] Read `.srt` files
-- [ ] Parse subtitle entries
-- [ ] Clean transcript text
-- [ ] Extract lecture metadata
-- [ ] Chunk transcripts
-- [ ] Store structured data in PostgreSQL
-
----
-
-## Phase 3 — Vector Database
-
-- [ ] Generate embeddings
-- [ ] Create Qdrant collection
-- [ ] Store vectors
-- [ ] Store chunk metadata
-- [ ] Test similarity search
-
----
-
-## Phase 4 — Basic RAG
-
-Build the simplest working pipeline:
-
-```text
-Query
- ↓
-Embedding
- ↓
-Qdrant
- ↓
-Top K
- ↓
-LLM
- ↓
-Answer
-```
-
-Do not add all advanced features before basic RAG works.
-
----
-
-## Phase 5 — Input Guardrails
-
-- [ ] Validate user queries
-- [ ] Detect sensitive requests
-- [ ] Reject unsafe queries
-
----
-
-## Phase 6 — Query Transformation
-
-- [ ] Query rewriting
-- [ ] Query decomposition
-- [ ] Optional step-back prompting
-- [ ] Optional HyDE
-
----
-
-## Phase 7 — Query Routing
-
-- [ ] Build LLM router
-- [ ] Add Qdrant route
-- [ ] Add SQL route
-- [ ] Add Text-to-SQL
-- [ ] Validate generated SQL
-
----
-
-## Phase 8 — Retrieval Optimization
-
-- [ ] Retrieve candidate results
-- [ ] Combine multi-source results
-- [ ] Add reranking
-- [ ] Select Top 5
-
----
-
-## Phase 9 — Generation
-
-- [ ] Build RAG prompt
-- [ ] Generate grounded answer
-- [ ] Include relevant source metadata
-
----
-
-## Phase 10 — Evaluation
-
-- [ ] Add evaluator LLM
-- [ ] Generate score from 1-10
-- [ ] Set acceptance threshold to 6
-- [ ] Add retry logic
-- [ ] Limit retries to 3
-
----
-
-## Phase 11 — Output Safety
-
-- [ ] Add output guardrail
-- [ ] Detect sensitive information
-- [ ] Sanitize/block unsafe output
-
----
-
-## Phase 12 — Async Processing
-
-For larger/production-style workloads:
-
-```text
-POST /query
-     |
-     v
-Queue
-     |
-     v
-job_id
-     |
-     v
-Worker
-     |
-     v
-RAG Pipeline
-     |
-     v
-Result
-```
-
-The first implementation can remain synchronous.
-
-Async processing should be introduced after the core pipeline works.
-
----
-
-# Simple RAG vs Advanced RAG
-
-| Feature | Simple RAG | This Project |
-|---|---:|---:|
-| Document ingestion | Yes | Yes |
-| Chunking | Yes | Yes |
-| Embeddings | Yes | Yes |
-| Vector DB | Yes | Yes |
-| Basic retrieval | Yes | Yes |
-| Input guardrails | Usually no | Yes |
-| Query rewriting | Optional | Yes |
-| Query decomposition | No | Yes |
-| Query routing | No | Yes |
-| SQL retrieval | No | Yes |
-| Text-to-SQL | No | Yes |
-| Candidate ranking | Basic | Yes |
-| Reranking | Optional | Yes |
-| Top 5 selection | Basic | Yes |
-| Answer evaluation | No | Yes |
-| Retry loop | No | Yes |
-| Output guardrails | Usually no | Yes |
-| Async jobs | Optional | Future |
-
----
-
-# Important Design Principles
-
-## 1. Keep Routes Thin
-
-Bad:
-
-```text
-routes/query.ts
-    ├── guardrails
-    ├── embeddings
-    ├── Qdrant
-    ├── SQL
-    ├── ranking
-    ├── LLM
-    └── evaluation
-```
-
-Better:
-
-```text
-routes/query.ts
-      |
-      v
-rag/orchestrator.ts
-      |
-      ├── guardrails
-      ├── translation
-      ├── routing
-      ├── retrieval
-      ├── reranking
-      ├── generation
-      └── evaluation
-```
-
----
-
-## 2. Authentication and Authorization Are Not LLM Responsibilities
-
-If the system later contains user-specific/private data:
-
-```text
-Authentication
-    ↓
-Who is the user?
-
-Authorization
-    ↓
-What is the user allowed to access?
-```
-
-The LLM should never be trusted to decide permissions.
-
-The application should enforce access control before data reaches the model.
-
----
-
-## 3. Qdrant and PostgreSQL Solve Different Problems
-
-Think:
-
-```text
-Qdrant
-= "Find information that is semantically similar."
-
-PostgreSQL
-= "Find structured information using exact relationships/conditions."
-```
-
-They complement each other.
-
----
-
-## 4. Retrieval and Generation Are Separate
-
-The retriever finds evidence.
-
-The generator produces the answer.
-
-```text
-Retriever
-    ↓
-Evidence
-    ↓
-Generator
-    ↓
-Answer
-```
-
-Keeping these responsibilities separate makes the system easier to debug.
-
----
-
-## 5. Evaluation Should Be Observable
-
-When the evaluator gives:
-
-```text
-score: 4
-```
-
-do not simply retry blindly.
-
-Store useful debugging information such as:
-
-```text
-query
-attempt
-retrieved chunks
-generated answer
-evaluation score
-evaluation reason
-```
-
-This will help identify why the RAG pipeline failed.
-
----
-
-# Future Improvements
-
-Once the core assignment works, the architecture can be extended with:
-
-- Hybrid search
-- BM25 + vector search
-- Better rerankers
-- Metadata filtering
-- Source citations
-- Query caching
-- Response caching
-- Streaming responses
-- Conversation memory
-- User-specific access control
-- Observability/tracing
-- LangGraph workflow orchestration
-- Inngest/background jobs
-- Queue-based asynchronous processing
-- Evaluation datasets
-- Automated RAG benchmarks
+## 🚧 Future Improvements
+
+- More precise subtitle-level timestamp attribution
+- Better source attribution per decomposed query
+- Streaming responses with SSE/WebSockets
+- Frontend integration
+- Persistent query/result storage
+- Advanced reranking models
+- Hybrid keyword + vector retrieval
+- Improved evaluation metrics
+- Observability and tracing
+- Authentication and rate limiting
 - Production deployment
-- Rate limiting
-- More robust SQL validation
 
 ---
 
-# Final Mental Model
+## 🎯 Project Goal
 
-The easiest way to remember this architecture is:
+The goal of this project is to build and understand an advanced RAG system from the ground up while keeping each component explicit and independently understandable.
+
+Rather than relying on an end-to-end RAG framework, the project implements the major components directly:
 
 ```text
-                 ADVANCED RAG
-                      |
-        +-------------+-------------+
-        |             |             |
-        v             v             v
-      SAFETY       QUERY          DATA
-        |        PROCESSING      SOURCES
-        |             |             |
-     Input         Rewrite       Qdrant
-     Guardrail     Decompose     PostgreSQL
-                   Route
-                      |
-                      v
-                   RETRIEVE
-                      |
-                      v
-                ~120 Candidates
-                      |
-                      v
-                  RERANKING
-                      |
-                      v
-                    Top 5
-                      |
-                      v
-                  GENERATE
-                      |
-                      v
-                  EVALUATE
-                      |
-               +------+------+
-               |             |
-             < 6           >= 6
-               |             |
-             RETRY       Output Guardrail
-            max 3             |
-                              v
-                           RESPONSE
+Ingestion
+   ↓
+Chunking
+   ↓
+Embeddings
+   ↓
+Vector Database
+   ↓
+Query Enhancement
+   ↓
+Query Decomposition
+   ↓
+Query Routing
+   ↓
+Hybrid Retrieval
+   ↓
+Reranking
+   ↓
+Answer Generation
+   ↓
+Evaluation
+   ↓
+Retry
+   ↓
+Output Guardrail
+   ↓
+Final Response
 ```
 
-The key difference from simple RAG is that **retrieval is no longer a single vector-search operation**.
+---
 
-The system intelligently decides:
+## 📄 License
 
-> **Is the query safe? → How should I transform it? → Does it contain multiple questions? → Which database should answer each part? → What are the best results? → Is the generated answer good enough? → Is the final output safe?**
+This project is intended for educational and experimental purposes.
 
-That is the core idea behind this Advanced RAG project.
+Add the license of your choice before publishing the repository.
