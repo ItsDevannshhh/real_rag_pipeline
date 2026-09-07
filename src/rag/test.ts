@@ -1,58 +1,90 @@
-import { decomposeQuery } from "./query-decomposer";
-import { enhanceQuery } from "./query-enhancer";
-import { retrieveForQueries } from "./retrieval";
-import { generateFinalAnswer } from "./final-answer";
-import { resolveSources } from "./utils/source-resolver";
-import { deduplicateSources } from "./utils/source-deduplicator";
+import "dotenv/config";
+
+import { ai } from "../db/ai";
+import { runRag } from "./run-rag";
+
+const LLM_MODEL = "gpt-4o-mini";
 
 const userQuery =
-  "What is React Native and how many lectures are in module 3?";
+    "tell me about the projects of this course and how many lectures are in this course";
 
-const enhancedQuery = await enhanceQuery(userQuery);
+const main = async () => {
+    // Run the complete RAG pipeline
+    const ragResult = await runRag(userQuery);
 
-console.log("\n========== ORIGINAL QUERY ==========");
-console.log(userQuery);
+    if (ragResult.blocked) {
+        console.log(ragResult.answer);
+        return;
+    }
 
-console.log("\n========== ENHANCED QUERY ==========");
-console.log(enhancedQuery);
+    // Final LLM turns the RAG result into a natural answer
+    const response = await ai.chat.completions.create({
+        model: LLM_MODEL,
+        temperature: 0,
+        messages: [
+            {
+                role: "system",
+                content: `
+You are the final response generator for a course
+question-answering system.
 
-const queries = await decomposeQuery(enhancedQuery);
+The RAG system has already processed the user's question
+and produced an answer with supporting course sources.
 
-console.log("\n========== DECOMPOSED QUERIES ==========");
+Your job is to produce the final response that will be
+shown directly to the student.
 
-queries.forEach((query, index) => {
-  console.log(`${index + 1}. ${query}`);
-});
+Rules:
 
-const results = await retrieveForQueries(queries);
+- Answer the user's question naturally and clearly.
+- Use the RAG result as your source of truth.
+- Do not use outside knowledge.
+- Do not invent information.
+- Preserve the meaning of the RAG answer.
+- Explain the answer in your own natural words.
+- When the RAG result contains relevant course sources,
+  naturally tell the student where the information was
+  discussed.
+- Mention the module, lecture, and timestamp when relevant with the proper starting and ending time
+- Use the source timestamps exactly as provided.
+- Never invent or modify timestamps.
+- Never invent lecture or module names.
+- If multiple sources support different parts of the answer,
+  mention the relevant locations naturally.
+- Do not return JSON.
+- Do not use a rigid response template.
+- Do not mention internal implementation details such as
+  Qdrant, PostgreSQL, embeddings, reranking, or RAG.
+- Return only the natural-language answer.
 
-console.log("\n========== RETRIEVAL RESULTS ==========\n");
+The goal is to answer the student's question while also
+helping them locate the relevant discussion in the course.
+                `.trim(),
+            },
+            {
+                role: "user",
+                content: JSON.stringify({
+                    question: userQuery,
+                    ragResult,
+                }),
+            },
+        ],
+    });
 
-for (const result of results) {
-  console.log(`Query : ${result.query}`);
-  console.log(`Route : ${result.route}`);
-  console.log("Data  :");
-  console.dir(result.data, { depth: null });
-  console.log("-----------------------------------");
-}
+    const finalAnswer =
+        response.choices[0]?.message?.content;
 
-const generatedAnswer = await generateFinalAnswer(
-  userQuery,
-  results
-);
+    if (!finalAnswer) {
+        throw new Error(
+            "Final LLM did not return an answer"
+        );
+    }
 
-const sources = deduplicateSources(
-  resolveSources(
-    results,
-    generatedAnswer.sourceIds
-  )
-);
+    console.log(
+        "\n========== FINAL ANSWER ==========\n"
+    );
 
-const finalAnswer = {
-  answer: generatedAnswer.answer,
-  sources,
+    console.log(finalAnswer);
 };
 
-console.log("\n========== FINAL ANSWER ==========\n");
-
-console.dir(finalAnswer, { depth: null });
+await main();

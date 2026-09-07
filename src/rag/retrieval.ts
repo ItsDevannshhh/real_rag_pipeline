@@ -10,48 +10,48 @@ export interface RetrievedEvidence {
     data: unknown;
 }
 
+async function retrieveSingleQuery(
+    query: string
+): Promise<RetrievedEvidence> {
+    console.log(`\nProcessing query: ${query}`);
+
+    const route = await routeQuery(query);
+
+    console.log(`Route: ${route}`);
+
+    if (route === "VECTOR") {
+        const candidates = await searchVectors(query, 10);
+
+        const reranked = await rerankResults(
+            query,
+            candidates,
+            5
+        );
+
+        return {
+            query,
+            route,
+            data: reranked,
+        };
+    }
+
+    const sql = await generateSql(query);
+
+    console.log(`Generated SQL:\n${sql}`);
+
+    const sqlResult = await executeReadOnlySql(sql);
+
+    return {
+        query,
+        route,
+        data: sqlResult,
+    };
+}
+
 export async function retrieveForQueries(
     queries: string[]
 ): Promise<RetrievedEvidence[]> {
-    const results: RetrievedEvidence[] = [];
-
-    for (const query of queries) {
-        console.log(`\nProcessing query: ${query}`);
-
-        const route = await routeQuery(query);
-
-        console.log(`Route: ${route}`);
-
-        if (route === "VECTOR") {
-            const candidates = await searchVectors(query, 10);
-
-            const reranked = await rerankResults(
-                query,
-                candidates,
-                5
-            );
-
-            results.push({
-                query,
-                route,
-                data: reranked,
-            });
-
-            continue;
-        }
-
-        const sql = await generateSql(query);
-
-        console.log(`Generated SQL:\n${sql}`);
-
-        const sqlResult = await executeReadOnlySql(sql);
-
-        results.push({
-            query,
-            route,
-            data: sqlResult,
-        });
-    }
-
-    return results;
+    return Promise.all(
+        queries.map((query) => retrieveSingleQuery(query))
+    );
 }
